@@ -6,10 +6,10 @@ table inet vpn_filter {
         iifname "lo" accept
 
         # The one public mode: standard WireGuard over UDP/443.
-        iifname "eth0" udp dport 443 accept
+        iifname "outer0" udp dport 443 accept
 
         # Preserve useful path-error signalling for the encrypted outer flow.
-        iifname "eth0" ip protocol icmp icmp type {
+        iifname "outer0" ip protocol icmp icmp type {
             destination-unreachable,
             time-exceeded,
             parameter-problem
@@ -25,8 +25,19 @@ table inet vpn_filter {
         type filter hook forward priority filter; policy drop;
 
         ct state invalid drop
-        iifname "wg0" oifname "eth0" ip saddr 10.77.0.0/24 accept
-        iifname "eth0" oifname "wg0" ip daddr 10.77.0.0/24 \
+
+        # These two addresses are the mandatory Haggai views. DNAT has already
+        # changed their destinations to the private bridge transit addresses.
+        iifname "wg0" oifname "haggai0" ip saddr 10.77.0.0/24 \
+            ip daddr { 169.254.77.2, 169.254.77.3 } \
+            meta l4proto { tcp, udp } ct mark 0x4d470001 accept
+        iifname "haggai0" oifname "wg0" ip daddr 10.77.0.0/24 \
+            ct mark 0x4d470001 ct state established,related accept
+
+        # All other authenticated IPv4 traffic keeps the original unrestricted
+        # host/LAN/Internet egress behavior.
+        iifname "wg0" oifname "outer0" ip saddr 10.77.0.0/24 accept
+        iifname "outer0" oifname "wg0" ip daddr 10.77.0.0/24 \
             ct state established,related accept
     }
 
@@ -35,8 +46,22 @@ table inet vpn_filter {
     }
 }
 table ip vpn_nat {
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+
+        iifname "wg0" ip saddr 10.77.0.0/24 ip daddr 172.30.77.3 \
+            meta l4proto { tcp, udp } \
+            ct mark set 0x4d470001 dnat to 169.254.77.2
+        iifname "wg0" ip saddr 10.77.0.0/24 ip daddr 172.30.77.4 \
+            meta l4proto { tcp, udp } \
+            ct mark set 0x4d470001 dnat to 169.254.77.3
+    }
+
     chain postrouting {
         type nat hook postrouting priority srcnat; policy accept;
-        oifname "eth0" ip saddr 10.77.0.0/24 masquerade
+
+        oifname "haggai0" ip daddr { 169.254.77.2, 169.254.77.3 } \
+            ct mark 0x4d470001 snat to 169.254.77.1
+        oifname "outer0" ip saddr 10.77.0.0/24 masquerade
     }
 }

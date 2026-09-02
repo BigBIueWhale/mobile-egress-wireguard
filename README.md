@@ -1,9 +1,11 @@
-# Mobile egress WireGuard
+# Mobile egress WireGuard with Haggai access
 
-This project exposes one deliberately small VPN mode: standard WireGuard over
-`UDP/443`. A phone or computer can send its Internet traffic through the host's
-connection using the official WireGuard client. There is no web UI, control
-API, alternate transport, obfuscation layer, or protocol fallback.
+This project exposes one deliberately fixed VPN mode: standard WireGuard over
+`UDP/443`, unrestricted IPv4 egress through the host, and authenticated access
+to every TCP/UDP port in the running `haggai_computer` network namespace. A
+phone or computer uses the official WireGuard client. There is no egress-only
+mode, Haggai-disabled mode, port allowlist, web UI, control API, alternate
+transport, obfuscation layer, or protocol fallback.
 
 The deployment is location-neutral. Its endpoint, keys, device profiles, QR
 codes, and host-specific listener inventory are local ignored files, so the
@@ -15,16 +17,20 @@ software to one operator, domain, address, or country.
 - The host's in-tree Linux WireGuard module handles public packets.
 - The only userspace WireGuard component is `wireguard-tools v1.0.20260223`,
   compiled from the authenticated source archive vendored in this repository.
-- Docker publishes exactly `0.0.0.0:443/udp` from a dedicated bridge namespace.
+- Docker publishes exactly `0.0.0.0:443/udp`; Haggai adds no host-published port.
 - Each device receives its own Curve25519 key and 256-bit pre-shared key.
 - `PersistentKeepalive = 25` and an MTU of 1280 favor recovery across sleep,
   underground sections, train dead zones, and Wi-Fi/cellular address changes.
-- The service has no post-authentication rate limit and no destination
-  blocklist. An authenticated device gets the same reachability the host has.
+- An authenticated device gets the host's existing LAN/Internet reachability
+  plus `172.30.77.3:<port>` for Haggai loopback/wildcard listeners and
+  `172.30.77.4:<port>` for Haggai eth0/wildcard listeners.
 - The container drops to UID/GID 65534 with zero capabilities after creating
   the interface and installing its namespace-local firewall.
-- Nothing writes host sysctls, nftables rules, routes, service units, or files
-  under `/etc`; removal is `docker compose down` plus deletion of this folder.
+- A minimal, read-only helper shares only Haggai's network namespace. It has no
+  mount, PID namespace, Docker socket, host namespace, or network listener.
+- Nothing writes global host sysctls, nftables rules, routes, service units, or
+  files under `/etc`. `scripts/teardown.sh` also removes the namespace-local
+  addresses, nftables table, and interface-scoped sysctl.
 
 See [SECURITY.md](SECURITY.md) for exact trust boundaries and limitations.
 
@@ -32,6 +38,12 @@ See [SECURITY.md](SECURITY.md) for exact trust boundaries and limitations.
 
 - A Linux host whose kernel includes WireGuard.
 - Docker Engine with the Compose v2 plugin.
+- The exact hardened
+  [`BigBIueWhale/haggai_computer`](https://github.com/BigBIueWhale/haggai_computer)
+  deployment: a running, healthy container named `haggai_computer`, image
+  `haggai_computer:1.4.7`, attached only to Docker's legacy `bridge`. This
+  dependency is mandatory and is validated; there is no substitute target or
+  fallback mode.
 - A public IPv4 path to this host. Forward only UDP/443 when using an ordinary
   router. If the host is in a router DMZ, every unrelated non-loopback listener
   must be independently understood and secured.
@@ -68,7 +80,9 @@ Initialize with the required endpoint argument:
 ./scripts/init.sh --endpoint vpn.example.com
 ```
 
-The command refuses to overwrite existing server keys. It creates private local
+The command first validates the required Haggai container and refuses to
+continue if its image, health, network, mount, or privilege boundary has
+drifted. It refuses to overwrite existing server keys. It creates private local
 artifacts under `secrets/` and `clients/`, validates the assembled server
 configuration in a throw-away network namespace, and never prints key material.
 It also stores the validated endpoint in the ignored, mode-`0600` local
@@ -97,12 +111,34 @@ one identity will displace each other. Create a distinct client instead:
 Every client `.conf` and QR image contains a private key and pre-shared key.
 Treat either file as a complete access credential.
 
+## Haggai destinations
+
+Every authenticated client profile already routes both fixed destinations
+through WireGuard because `AllowedIPs` is `0.0.0.0/0, ::/0`:
+
+```text
+172.30.77.3:<port>  ->  haggai_computer 127.0.0.1:<port>
+172.30.77.4:<port>  ->  haggai_computer eth0:<port>
+```
+
+A process bound to `0.0.0.0` is reachable through either address. The port is
+never translated. TCP and UDP are supported from port 1 through 65535; ICMP,
+Unix-domain sockets, IPv6 `::1`, and non-IP IPC are not exposed. Literal
+`127.0.0.1` on a VPN client still means that client itself, which is why the
+fixed `172.30.77.3` address exists.
+
+No software runs inside the Haggai filesystem and no Docker image is nested
+inside it. The helper is a sibling container that shares only the existing
+network namespace. Deployment does not stop, restart, or recreate Haggai and
+does not touch its writable layer or `/home/user` bind mount.
+
 ## Operations
 
 ```sh
 ./scripts/status.sh
 ./scripts/audit-host.sh
 ./tests/static.sh
+./tests/network-policy.sh
 
 ./scripts/smoke-test.sh android internal
 ./scripts/smoke-test.sh android public
@@ -111,16 +147,43 @@ Treat either file as a complete access credential.
 ./scripts/render-qr.sh laptop
 ./scripts/revoke-client.sh lost-phone
 
-docker compose up --detach --build vpn
-docker compose down
+./scripts/deploy.sh
+./scripts/teardown.sh
 ```
 
 The internal smoke test creates an ephemeral client network namespace and tests
-an authenticated tunnel directly through the Docker bridge. The public mode
-uses the configured DNS endpoint and additionally tests the router's public
-path when NAT loopback is available. A public-mode failure from inside the home
-network is inconclusive on routers without NAT loopback; test from cellular as
-well.
+an authenticated tunnel directly through the Docker bridge. It also creates
+two short-lived, unprivileged TCP probe processes that share Haggai's network
+namespace—one bound only to loopback and one only to eth0—and proves both fixed
+destinations through the tunnel. They have no mounts or capabilities and are
+removed when the test exits. The public mode uses the configured DNS endpoint
+and additionally tests the router's public path when NAT loopback is available.
+A public-mode failure from inside the home network is inconclusive on routers
+without NAT loopback; test from cellular as well.
+
+`deploy.sh` is the update path for an initialized installation. It validates
+Haggai, builds the pinned images, runs the disposable TCP/UDP policy suite,
+derives the expected WireGuard public key from the existing ignored
+`secrets/server.conf`, and recreates only this Compose project. It then proves
+the configuration digest and public key are unchanged and that Haggai kept the
+same container ID and start time. Existing clients therefore keep working with
+the same server identity.
+
+The deploy script performs one explicit Docker endpoint attachment: it connects
+the VPN container to the built-in `bridge` with interface name `haggai0`, no
+network alias, and gateway priority `-1`. Compose cannot express this exact
+attachment because it always supplies a DNS alias and Docker correctly rejects
+aliases on the built-in bridge. The VPN entrypoint waits for and validates this
+attachment and refuses to create `wg0` without it; the explicit Engine operation
+is therefore mandatory orchestration, not an optional mode or fallback. Docker
+persists the endpoint across ordinary container and daemon restarts.
+
+Use `teardown.sh`, not a bare `docker compose down`. Docker can apply the
+required `route_localnet` setting to a shared network namespace but does not
+restore it automatically when the helper is removed. The helper deliberately
+leaves a fail-closed nftables guard in place; `teardown.sh` first stops VPN
+traffic, resets that one Haggai-namespace sysctl, deletes the owned networking
+state, and then removes the Compose project. Haggai remains running throughout.
 
 `status.sh` displays handshakes and traffic counters without revealing the
 server private key. A recent handshake after a phone enables the tunnel proves

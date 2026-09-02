@@ -1,0 +1,42 @@
+table ip haggai_vpn_bridge {
+    comment "managed by BigBIueWhale/mobile-egress-wireguard"
+
+    # This element is deliberately short-lived. The helper refreshes it every
+    # three seconds, so even SIGKILL or an OOM kill closes the ingress path
+    # without depending on a cleanup trap.
+    set active_gateway {
+        type ipv4_addr
+        flags timeout
+        timeout 10s
+    }
+
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+
+        iifname "eth0" ether saddr 02:77:4d:47:00:01 \
+            ip saddr @active_gateway ip daddr 169.254.77.2 \
+            meta l4proto { tcp, udp } \
+            ct mark set 0x4d470001 dnat to 127.0.0.1
+
+        iifname "eth0" ether saddr 02:77:4d:47:00:01 \
+            ip saddr @active_gateway ip daddr 169.254.77.3 \
+            meta l4proto { tcp, udp } \
+            ct mark set 0x4d470001 dnat to $haggai_eth0
+    }
+
+    chain input_guard {
+        type filter hook input priority -10; policy accept;
+
+        # Marked packets remain valid only while the helper's expiring
+        # authorization element is present. This closes established flows too,
+        # rather than protecting only the first packet of a new connection.
+        iifname "eth0" ct mark 0x4d470001 \
+            ip saddr @active_gateway accept
+        iifname "eth0" ct mark 0x4d470001 drop
+
+        # route_localnet is enabled only on eth0. Never let an unmarked frame
+        # use it, and never accept either unrouted transit alias directly.
+        iifname "eth0" ip daddr 127.0.0.0/8 drop
+        iifname "eth0" ip daddr { 169.254.77.2, 169.254.77.3 } drop
+    }
+}

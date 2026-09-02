@@ -69,10 +69,13 @@ RUN apk add --no-cache \
 
 COPY --from=build /out/wg /usr/local/bin/wg
 COPY --chmod=0755 container/entrypoint.sh /usr/local/sbin/vpn-entrypoint
+COPY --chmod=0755 container/haggai-network-entrypoint.sh /usr/local/sbin/haggai-network-entrypoint
+COPY --chmod=0755 container/haggai-network-reset.sh /usr/local/sbin/haggai-network-reset
 COPY --chmod=0444 container/vpn.nft /etc/nftables.d/vpn.nft
+COPY --chmod=0444 container/haggai-network.nft /etc/nftables.d/haggai-network.nft
 
-LABEL org.opencontainers.image.title="Mobile egress WireGuard" \
-      org.opencontainers.image.description="Single-protocol, source-pinned WireGuard control plane using the host kernel data plane" \
+LABEL org.opencontainers.image.title="Mobile egress WireGuard with mandatory Haggai routing" \
+      org.opencontainers.image.description="Source-pinned WireGuard egress with authenticated access to the Haggai container network namespace" \
       org.opencontainers.image.source="https://git.zx2c4.com/wireguard-tools" \
       org.opencontainers.image.version="1.0.20260223"
 

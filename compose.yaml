@@ -1,6 +1,33 @@
 name: mobile-wireguard
 
 services:
+  haggai-network:
+    image: local/mobile-wireguard:1.0.20260223
+    build:
+      context: .
+      target: runtime
+    container_name: mobile-wireguard-haggai-network
+    restart: unless-stopped
+    network_mode: container:haggai_computer
+    entrypoint:
+      - /usr/local/sbin/haggai-network-entrypoint
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    pids_limit: 8
+    sysctls:
+      net.ipv4.conf.eth0.route_localnet: "1"
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    stop_grace_period: 5s
+
   vpn:
     image: local/mobile-wireguard:1.0.20260223
     build:
@@ -13,6 +40,7 @@ services:
     cap_add:
       - NET_ADMIN
       - DAC_READ_SEARCH
+      - NET_RAW
       - SETGID
       - SETUID
     security_opt:
@@ -39,13 +67,20 @@ services:
       net.ipv4.ip_forward: "1"
     networks:
       egress:
+        interface_name: outer0
         ipv4_address: 172.30.77.2
+        gw_priority: 1
     logging:
       driver: json-file
       options:
         max-size: 10m
         max-file: "3"
     stop_grace_period: 3s
+    depends_on:
+      haggai-network:
+        condition: service_started
+        restart: true
+        required: true
 
   tools:
     image: local/mobile-wireguard-tools:1.0.20260223
@@ -70,3 +105,6 @@ networks:
     ipam:
       config:
         - subnet: 172.30.77.0/29
+          aux_addresses:
+            haggai-loopback: 172.30.77.3
+            haggai-ethernet: 172.30.77.4

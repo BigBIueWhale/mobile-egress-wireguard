@@ -16,7 +16,7 @@ done
 docker compose --project-directory "$project_dir" \
     --file "$project_dir/compose.yaml" config --quiet
 
-if rg -n '(^|[^[:alpha:]])(latest|privileged:[[:space:]]*true|network_mode:[[:space:]]*host|pid:[[:space:]]*host|/var/run/docker.sock|/run/docker.sock)' \
+if rg -n '(^|[^[:alpha:]])(latest|privileged:[[:space:]]*true|network_mode:[[:space:]]*host|pid:[[:space:]]*host|SYS_ADMIN|/var/run/docker.sock|/run/docker.sock)' \
     Dockerfile compose.yaml; then
     printf 'forbidden mutable or host-privileged construct found\n' >&2
     exit 1
@@ -59,6 +59,21 @@ printf '%s\n' "$compose_rendered" | grep -Fq 'host_ip: 0.0.0.0'
 printf '%s\n' "$compose_rendered" | grep -Fq 'protocol: udp'
 printf '%s\n' "$compose_rendered" | grep -Fq 'read_only: true'
 printf '%s\n' "$compose_rendered" | grep -Fq 'no-new-privileges:true'
+printf '%s\n' "$compose_rendered" | grep -Fq 'network_mode: container:haggai_computer'
+printf '%s\n' "$compose_rendered" | grep -Fq 'interface_name: outer0'
+printf '%s\n' "$compose_rendered" | grep -Fq 'net.ipv4.conf.eth0.route_localnet: "1"'
+printf '%s\n' "$compose_rendered" | grep -Fq 'condition: service_started'
+printf '%s\n' "$compose_rendered" | grep -Fq 'required: true'
+grep -Fq 'haggai-loopback: 172.30.77.3' compose.yaml
+grep -Fq 'haggai-ethernet: 172.30.77.4' compose.yaml
+grep -Fq -- '--driver-opt com.docker.network.endpoint.ifname=haggai0' scripts/common.sh
+grep -Fq -- '--gw-priority -1' scripts/common.sh
+grep -Fq 'ip daddr 172.30.77.3' container/vpn.nft
+grep -Fq 'ip daddr 172.30.77.4' container/vpn.nft
+grep -Fq 'dnat to 127.0.0.1' container/haggai-network.nft
+grep -Fq 'dnat to $haggai_eth0' container/haggai-network.nft
+grep -Fq 'COPY --chmod=0755 container/haggai-network-entrypoint.sh' Dockerfile
+grep -Fq 'COPY --chmod=0444 container/haggai-network.nft' Dockerfile
 
 (cd vendor/wireguard-tools && sha256sum --check CHECKSUMS.sha256)
 

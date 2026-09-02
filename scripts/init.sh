@@ -24,13 +24,16 @@ for client_name in "$@"; do
     seen_clients="$seen_clients$client_name "
 done
 
+validate_haggai_environment
 ensure_private_dirs
+"$project_dir/tests/static.sh"
 [ ! -e "$secrets_dir/server.key" ] || \
     die "server keys already exist; refusing to overwrite them"
 
 # The endpoint is a required input, then becomes ignored local deployment state.
 persist_endpoint_host "$endpoint"
 build_images
+"$project_dir/tests/network-policy.sh"
 
 server_private="$(tool wg genkey)"
 server_public="$(printf '%s\n' "$server_private" | tool_stdin wg pubkey)"
@@ -42,8 +45,7 @@ for client_name in "$@"; do
 done
 
 "$script_dir/render-server.sh"
-compose up --detach --no-build vpn
-wait_until_ready
+start_vpn
 
 printf '\nVPN initialized. Import one profile per device from:\n'
 for client_name in "$@"; do

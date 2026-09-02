@@ -9,6 +9,8 @@ readonly clients_dir="$project_dir/clients"
 readonly revoked_dir="$project_dir/revoked"
 readonly tools_image="local/mobile-wireguard-tools:1.0.20260223"
 readonly runtime_image="local/mobile-wireguard:1.0.20260223"
+readonly haggai_container="haggai_computer"
+readonly haggai_helper_container="mobile-wireguard-haggai-network"
 
 die() {
     printf 'error: %s\n' "$*" >&2
@@ -22,6 +24,74 @@ compose() {
 
 build_images() {
     compose --profile admin build vpn tools
+}
+
+vpn_container_id() {
+    compose ps --all --quiet vpn 2>/dev/null || true
+}
+
+attach_haggai_network() {
+    local container_id attachment
+    container_id="$(vpn_container_id)"
+    [ -n "$container_id" ] || die "VPN container was not created"
+
+    attachment="$(docker inspect --format \
+        '{{with index .NetworkSettings.Networks "bridge"}}{{json .DriverOpts}}|{{.GwPriority}}{{end}}' \
+        "$container_id")"
+    if [ -n "$attachment" ]; then
+        [ "$attachment" = '{"com.docker.network.endpoint.ifname":"haggai0"}|-1' ] || \
+            die "existing VPN attachment to bridge has unexpected settings: $attachment"
+        return 0
+    fi
+
+    # Compose always supplies a DNS alias and Docker rejects aliases on its
+    # built-in bridge. Use the Engine's ordinary endpoint operation directly,
+    # with no alias, and make both the interface name and gateway priority exact.
+    docker network connect \
+        --driver-opt com.docker.network.endpoint.ifname=haggai0 \
+        --gw-priority -1 \
+        bridge "$container_id"
+}
+
+start_vpn() {
+    compose up --detach --no-build vpn
+    attach_haggai_network
+    wait_until_ready
+}
+
+validate_haggai_environment() {
+    local container_policy mount_policy network_policy route_localnet
+
+    docker inspect "$haggai_container" >/dev/null 2>&1 || \
+        die "required Haggai container does not exist: $haggai_container"
+
+    container_policy="$(docker inspect --format \
+        '{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}|{{.Config.Image}}|{{.HostConfig.NetworkMode}}|{{.HostConfig.Privileged}}|{{.HostConfig.PidMode}}|{{json .HostConfig.CapAdd}}' \
+        "$haggai_container")"
+    [ "$container_policy" = 'true|healthy|haggai_computer:1.4.7|bridge|false||null' ] || \
+        die "Haggai container does not match the required running 1.4.7 boundary: $container_policy"
+
+    mount_policy="$(docker inspect --format \
+        '{{len .Mounts}}|{{range .Mounts}}{{.Type}}|{{.Destination}}|{{.RW}}{{end}}' \
+        "$haggai_container")"
+    [ "$mount_policy" = '1|bind|/home/user|true' ] || \
+        die "Haggai mount boundary drifted: $mount_policy"
+
+    network_policy="$(docker inspect --format \
+        '{{len .NetworkSettings.Networks}}|{{with index .NetworkSettings.Networks "bridge"}}{{.IPAddress}}/{{.IPPrefixLen}}|{{.Gateway}}{{end}}' \
+        "$haggai_container")"
+    printf '%s\n' "$network_policy" | \
+        grep -Eq '^1\|[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+\|[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || \
+        die "Haggai must be attached only to Docker's legacy bridge: $network_policy"
+
+    [ "$(docker exec "$haggai_container" cat /proc/sys/net/ipv4/conf/all/route_localnet)" = 0 ] || \
+        die "Haggai has an unsafe namespace-wide route_localnet setting"
+    route_localnet="$(docker exec "$haggai_container" cat /proc/sys/net/ipv4/conf/eth0/route_localnet)"
+    case "$route_localnet" in 0|1) ;; *) die "Haggai eth0 route_localnet is invalid" ;; esac
+
+    docker exec "$haggai_container" ss -H -lnt | \
+        awk '$4 == "0.0.0.0:21118" { found = 1 } END { exit !found }' || \
+        die "Haggai's required 0.0.0.0:21118 listener is absent"
 }
 
 tool() {
@@ -127,13 +197,29 @@ running_container_id() {
     compose ps --status running --quiet vpn 2>/dev/null || true
 }
 
+haggai_helper_container_id() {
+    compose ps --status running --quiet haggai-network 2>/dev/null || true
+}
+
+server_config_public_key() {
+    local private_key_lines
+    [ -s "$secrets_dir/server.conf" ] || die "missing server configuration"
+    private_key_lines="$(grep -c '^PrivateKey *=' "$secrets_dir/server.conf" || true)"
+    [ "$private_key_lines" -eq 1 ] || \
+        die "server configuration must contain exactly one private key"
+    sed -n 's/^PrivateKey *= *//p' "$secrets_dir/server.conf" | tool_stdin wg pubkey
+}
+
 wait_until_ready() {
-    local attempts container_id
+    local attempts container_id helper_id
     attempts=0
-    while [ "$attempts" -lt 20 ]; do
+    while [ "$attempts" -lt 45 ]; do
         container_id="$(running_container_id)"
-        if [ -n "$container_id" ] && \
-            [ "$(docker exec "$container_id" wg show wg0 listen-port 2>/dev/null || true)" = 443 ]; then
+        helper_id="$(haggai_helper_container_id)"
+        if [ -n "$container_id" ] && [ -n "$helper_id" ] && \
+            [ "$(docker exec "$container_id" wg show wg0 listen-port 2>/dev/null || true)" = 443 ] && \
+            docker exec "$helper_id" nft list set ip haggai_vpn_bridge active_gateway \
+                2>/dev/null | grep -Fq '169.254.77.1'; then
             return 0
         fi
 
@@ -141,13 +227,14 @@ wait_until_ready() {
         sleep 1
     done
 
-    compose logs --no-color --tail 50 vpn >&2 || true
-    die "VPN did not become ready on UDP/443 within 20 seconds"
+    compose logs --no-color --tail 80 haggai-network vpn >&2 || true
+    die "VPN and its mandatory Haggai path did not become ready within 45 seconds"
 }
 
 recreate_if_running() {
     if [ -n "$(running_container_id)" ]; then
         compose up --detach --force-recreate --no-build vpn
+        attach_haggai_network
         wait_until_ready
     fi
 }
