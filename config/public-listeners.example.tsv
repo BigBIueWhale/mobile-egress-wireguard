@@ -1,0 +1,5 @@
+# One reviewed row is required for every non-loopback host listener. Generate a
+# candidate with scripts/audit-host.sh --print-candidate, replace every REVIEW
+# label with the owning project/service, then save as public-listeners.tsv.
+# protocol	bind-address	port	owner
+udp	0.0.0.0	443	this-project

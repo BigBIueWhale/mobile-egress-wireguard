@@ -1,0 +1,42 @@
+table inet vpn_filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        ct state invalid drop
+        iifname "lo" accept
+
+        # The one public mode: standard WireGuard over UDP/443.
+        iifname "eth0" udp dport 443 accept
+
+        # Preserve useful path-error signalling for the encrypted outer flow.
+        iifname "eth0" ip protocol icmp icmp type {
+            destination-unreachable,
+            time-exceeded,
+            parameter-problem
+        } accept
+
+        # An authenticated peer may ping only the tunnel gateway itself. No
+        # TCP or UDP service is reachable through wg0.
+        iifname "wg0" ip saddr 10.77.0.0/24 \
+            icmp type echo-request accept
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+
+        ct state invalid drop
+        iifname "wg0" oifname "eth0" ip saddr 10.77.0.0/24 accept
+        iifname "eth0" oifname "wg0" ip daddr 10.77.0.0/24 \
+            ct state established,related accept
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}
+table ip vpn_nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        oifname "eth0" ip saddr 10.77.0.0/24 masquerade
+    }
+}

@@ -1,0 +1,72 @@
+name: mobile-wireguard
+
+services:
+  vpn:
+    image: local/mobile-wireguard:1.0.20260223
+    build:
+      context: .
+      target: runtime
+    container_name: mobile-wireguard
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - DAC_READ_SEARCH
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    pids_limit: 32
+    tmpfs:
+      - /run:rw,noexec,nosuid,nodev,size=1m,mode=0755
+      - /tmp:rw,noexec,nosuid,nodev,size=1m,mode=1777
+    volumes:
+      - type: bind
+        source: ./secrets/server.conf
+        target: /run/secrets/wg0.conf
+        read_only: true
+    ports:
+      - name: wireguard
+        target: 443
+        published: "443"
+        host_ip: 0.0.0.0
+        protocol: udp
+        app_protocol: wireguard
+        mode: host
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    networks:
+      egress:
+        ipv4_address: 172.30.77.2
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    stop_grace_period: 3s
+
+  tools:
+    image: local/mobile-wireguard-tools:1.0.20260223
+    build:
+      context: .
+      target: tools
+    profiles:
+      - admin
+    network_mode: none
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=4m,mode=1777
+
+networks:
+  egress:
+    name: mobile-wireguard-egress
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.77.0/29

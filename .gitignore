@@ -1,0 +1,17 @@
+# Device and server secrets. A client profile or QR code is sufficient to use
+# that client's VPN identity; never commit or upload these files.
+/secrets/*
+!/secrets/.gitkeep
+/clients/*
+!/clients/.gitkeep
+/revoked/*
+!/revoked/.gitkeep
+
+# Deployment-local public endpoint and host listener allowlist. The examples
+# are safe to publish; the live values identify a particular deployment.
+/config/endpoint
+/config/public-listeners.tsv
+
+# Local output
+/.audit/
+*.log

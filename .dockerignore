@@ -1,0 +1,13 @@
+.git
+.gitignore
+clients
+revoked
+secrets
+.audit
+config/endpoint
+config/public-listeners.tsv
+README.md
+SECURITY.md
+tests
+scripts
+Makefile
