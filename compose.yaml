@@ -18,7 +18,7 @@ services:
     security_opt:
       - no-new-privileges:true
     read_only: true
-    pids_limit: 8
+    pids_limit: 16
     sysctls:
       net.ipv4.conf.eth0.route_localnet: "1"
     logging:

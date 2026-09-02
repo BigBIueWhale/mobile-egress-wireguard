@@ -108,7 +108,7 @@ runtime_policy="$(docker inspect --format '{{.State.Running}}|{{.HostConfig.Read
     die "the VPN container hardening policy drifted: $runtime_policy"
 
 helper_policy="$(docker inspect --format '{{.State.Running}}|{{.HostConfig.ReadonlyRootfs}}|{{.HostConfig.Privileged}}|{{.HostConfig.NetworkMode}}|{{.HostConfig.PidMode}}|{{json .HostConfig.CapDrop}}|{{json .HostConfig.CapAdd}}|{{json .HostConfig.SecurityOpt}}|{{.HostConfig.PidsLimit}}|{{len .Mounts}}|{{json .HostConfig.Sysctls}}' "$helper_id")"
-[ "$helper_policy" = "true|true|false|container:$haggai_id||[\"ALL\"]|[\"CAP_NET_ADMIN\"]|[\"no-new-privileges:true\"]|8|0|{\"net.ipv4.conf.eth0.route_localnet\":\"1\"}" ] || \
+[ "$helper_policy" = "true|true|false|container:$haggai_id||[\"ALL\"]|[\"CAP_NET_ADMIN\"]|[\"no-new-privileges:true\"]|16|0|{\"net.ipv4.conf.eth0.route_localnet\":\"1\"}" ] || \
     die "the Haggai helper boundary drifted: $helper_policy"
 
 mount_policy="$(docker inspect --format '{{len .Mounts}}|{{range .Mounts}}{{.Type}}|{{.Destination}}|{{.RW}}{{end}}' "$container_id")"
@@ -156,7 +156,20 @@ printf '%s\n' "$helper_pid1_policy" | grep -Fx 'gid=0,0,0,0' >/dev/null
 printf '%s\n' "$helper_pid1_policy" | grep -Fx 'permitted=0000000000001000' >/dev/null
 printf '%s\n' "$helper_pid1_policy" | grep -Fx 'effective=0000000000001000' >/dev/null
 printf '%s\n' "$helper_pid1_policy" | grep -Fx 'no-new-privs=1' >/dev/null
-if docker exec "$helper_id" sh -ec "ls -l /proc/1/fd | grep -F 'socket:['"; then
+helper_fds=''
+helper_fd_attempt=0
+while [ "$helper_fd_attempt" -lt 5 ]; do
+    if helper_fds="$(docker exec "$helper_id" sh -ec '
+        for descriptor in /proc/1/fd/*; do readlink "$descriptor"; done
+    ' 2>/dev/null)"; then
+        break
+    fi
+    helper_fd_attempt=$((helper_fd_attempt + 1))
+    sleep 1
+done
+[ "$helper_fd_attempt" -lt 5 ] || \
+    die "could not inspect the Haggai helper's PID 1 file descriptors"
+if printf '%s\n' "$helper_fds" | grep -Fq 'socket:['; then
     die "the Haggai helper PID 1 unexpectedly owns a network socket"
 fi
 

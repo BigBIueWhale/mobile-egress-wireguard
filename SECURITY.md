@@ -94,7 +94,7 @@ The required `mobile-wireguard-haggai-network` companion uses Docker's
 namespace. It does not share Haggai's PID, mount, user, IPC, or UTS namespaces;
 it mounts no files and has no Docker socket, host path, device, published port,
 or listening socket. Its root filesystem is read-only, every capability is
-dropped except `NET_ADMIN`, `no_new_privs` is set, and its PID limit is eight.
+dropped except `NET_ADMIN`, `no_new_privs` is set, and its PID limit is sixteen.
 Haggai does not inherit the helper's capability and cannot see or signal its
 processes through Haggai's PID namespace.
 
